@@ -1,0 +1,145 @@
+1. Identify the Top 10 High-Value Customers who have contributed the highest revenue, considering all orders they placed. The query should calculate revenue using UnitPrice * Quantity * (1 - Discount) and rank customers accordingly.
+SELECT TOP 10 
+       c.CustomerID, 
+       c.CompanyName, 
+       SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) AS TotalRevenue,
+       RANK() OVER (ORDER BY SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) DESC) AS RevenueRank
+FROM Customers c
+JOIN Orders o ON c.CustomerID = o.CustomerID
+JOIN [Order Details] od ON o.OrderID = od.OrderID
+GROUP BY c.CustomerID, c.CompanyName
+ORDER BY TotalRevenue DESC;
+
+
+
+2. Determine which Regions generate the highest sales revenue by tracing the relationship between Regions → Territories → Employees → Orders → Order Details.
+SELECT r.RegionDescription,
+       SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) AS TotalRevenue
+FROM Regions r
+JOIN Territories t ON r.RegionID = t.RegionID
+JOIN EmployeeTerritories et ON t.TerritoryID = et.TerritoryID
+JOIN Employees e ON et.EmployeeID = e.EmployeeID
+JOIN Orders o ON e.EmployeeID = o.EmployeeID
+JOIN [Order Details] od ON o.OrderID = od.OrderID
+GROUP BY r.RegionDescription
+ORDER BY TotalRevenue DESC;
+
+
+3. Find the Top 15 Most Frequently Ordered Products along with the number of orders, total revenue generated, and their contribution percentage to overall revenue.
+WITH ProductSales AS (
+    SELECT p.ProductName,
+           COUNT(DISTINCT o.OrderID) AS OrderCount,
+           SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) AS ProductRevenue
+    FROM Products p
+    JOIN [Order Details] od ON p.ProductID = od.ProductID
+    JOIN Orders o ON o.OrderID = od.OrderID
+    GROUP BY p.ProductName
+)
+SELECT TOP 15 ProductName,
+       OrderCount,
+       ProductRevenue,
+       ROUND(100.0 * ProductRevenue / SUM(ProductRevenue) OVER(), 2) AS ContributionPercent
+FROM ProductSales
+ORDER BY ProductRevenue DESC;
+
+
+4. Calculate the Stock Turnover Ratio (how quickly inventory is sold and replaced) for each product, defined as (Total Quantity Ordered / UnitsInStock). Show only products with stock turnover greater than 2.
+SELECT p.ProductName,
+       SUM(od.Quantity) AS TotalOrdered,
+       p.UnitsInStock,
+       CASE WHEN p.UnitsInStock > 0 
+            THEN CAST(SUM(od.Quantity) AS FLOAT) / p.UnitsInStock
+            ELSE NULL END AS StockTurnoverRatio
+FROM Products p
+JOIN [Order Details] od ON p.ProductID = od.ProductID
+GROUP BY p.ProductName, p.UnitsInStock
+HAVING SUM(od.Quantity) / NULLIF(p.UnitsInStock,0) > 2
+ORDER BY StockTurnoverRatio DESC;
+
+
+5. Rank Employees by Sales Performance, showing each employee’s total revenue, their percentage contribution to overall sales, and their rank within the company.
+SELECT e.EmployeeID, e.FirstName, e.LastName,
+       SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) AS TotalSales,
+       ROUND(100.0 * SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) 
+             / SUM(SUM(od.UnitPrice * od.Quantity * (1 - od.Discount))) OVER(), 2) AS ContributionPercent,
+       RANK() OVER (ORDER BY SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) DESC) AS SalesRank
+FROM Employees e
+JOIN Orders o ON e.EmployeeID = o.EmployeeID
+JOIN [Order Details] od ON o.OrderID = od.OrderID
+GROUP BY e.EmployeeID, e.FirstName, e.LastName
+ORDER BY TotalSales DESC;
+
+
+6. Identify the Top Product Categories that generate the most revenue, and within each category, determine the single best-selling product by revenue.
+WITH CategorySales AS (
+    SELECT c.CategoryName, p.ProductName,
+           SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) AS ProductRevenue
+    FROM Categories c
+    JOIN Products p ON c.CategoryID = p.CategoryID
+    JOIN [Order Details] od ON p.ProductID = od.ProductID
+    GROUP BY c.CategoryName, p.ProductName
+)
+SELECT CategoryName, ProductName, ProductRevenue
+FROM (
+    SELECT CategoryName, ProductName, ProductRevenue,
+           RANK() OVER(PARTITION BY CategoryName ORDER BY ProductRevenue DESC) AS ProductRank
+    FROM CategorySales
+) Ranked
+WHERE ProductRank = 1
+ORDER BY ProductRevenue DESC;
+
+
+7. Compute the Average Order Value (AOV) per Customer, defined as (Total Revenue / Number of Orders) and rank customers by AOV.
+SELECT c.CustomerID, c.CompanyName,
+       COUNT(DISTINCT o.OrderID) AS TotalOrders,
+       SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) AS TotalRevenue,
+       ROUND(1.0 * SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) / COUNT(DISTINCT o.OrderID), 2) AS AvgOrderValue,
+       RANK() OVER (ORDER BY ROUND(1.0 * SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) / COUNT(DISTINCT o.OrderID), 2) DESC) AS AOVRank
+FROM Customers c
+JOIN Orders o ON c.CustomerID = o.CustomerID
+JOIN [Order Details] od ON o.OrderID = od.OrderID
+GROUP BY c.CustomerID, c.CompanyName
+ORDER BY AvgOrderValue DESC;
+
+
+8. Find the Products that Frequently Go Out of Stock, defined as UnitsInStock < ReorderLevel. Also calculate the total revenue lost by estimating missed sales (UnitsOnOrder * AvgUnitPrice).
+SELECT p.ProductName, p.UnitsInStock, p.ReorderLevel, p.UnitsOnOrder,
+       AVG(od.UnitPrice) AS AvgUnitPrice,
+       (p.UnitsOnOrder * AVG(od.UnitPrice)) AS EstimatedRevenueLost
+FROM Products p
+JOIN [Order Details] od ON p.ProductID = od.ProductID
+WHERE p.UnitsInStock < p.ReorderLevel
+GROUP BY p.ProductName, p.UnitsInStock, p.ReorderLevel, p.UnitsOnOrder
+ORDER BY EstimatedRevenueLost DESC;
+
+
+9. Identify Repeat Customers who placed more than 10 orders and calculate their average time gap (in days) between consecutive orders using a window function.
+WITH CustomerOrders AS (
+    SELECT c.CustomerID, c.CompanyName, o.OrderID, o.OrderDate,
+           LAG(o.OrderDate) OVER(PARTITION BY c.CustomerID ORDER BY o.OrderDate) AS PrevOrderDate
+    FROM Customers c
+    JOIN Orders o ON c.CustomerID = o.CustomerID
+)
+SELECT CustomerID, CompanyName,
+       COUNT(OrderID) AS TotalOrders,
+       AVG(DATEDIFF(DAY, PrevOrderDate, OrderDate)) AS AvgDaysBetweenOrders
+FROM CustomerOrders
+WHERE PrevOrderDate IS NOT NULL
+GROUP BY CustomerID, CompanyName
+HAVING COUNT(OrderID) > 10
+ORDER BY TotalOrders DESC;
+
+
+10. Analyze the Monthly Sales Trend over time by calculating total revenue per month and year, and also include a running total (cumulative sales) using a window function.
+WITH MonthlySales AS (
+    SELECT YEAR(o.OrderDate) AS OrderYear, 
+           MONTH(o.OrderDate) AS OrderMonth,
+           SUM(od.UnitPrice * od.Quantity * (1 - od.Discount)) AS MonthlyRevenue
+    FROM Orders o
+    JOIN [Order Details] od ON o.OrderID = od.OrderID
+    GROUP BY YEAR(o.OrderDate), MONTH(o.OrderDate)
+)
+SELECT OrderYear, OrderMonth, MonthlyRevenue,
+       SUM(MonthlyRevenue) OVER (ORDER BY OrderYear, OrderMonth ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS CumulativeRevenue
+FROM MonthlySales
+ORDER BY OrderYear, OrderMonth;
